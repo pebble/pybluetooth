@@ -32,6 +32,7 @@ requires = [
     'pyusb==1.0.0b2',
     'six==1.10.0',
     'pbr==1.9.1',
+    'enum34==1.1.3'
 ]
 
 setup(name='pybluetooth',
@@ -47,6 +48,7 @@ setup(name='pybluetooth',
       tests_require=[
         'pytest',
         'pytest-mock',
+        'mock',
         'scapy',
         'dnet',
         'pcapy',

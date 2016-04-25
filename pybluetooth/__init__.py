@@ -6,6 +6,7 @@ from threading import Event, RLock, Thread
 
 import hci_event_mask
 import pyusb_bt_sockets
+from connection import ConnectionManager
 
 LOG = logging.getLogger("pybluetooth")
 
@@ -14,33 +15,86 @@ class HCIResponseTimeoutException(Exception):
     pass
 
 
-class RxThread(Thread):
-    def __init__(self, socket):
-        super(RxThread, self).__init__()
+class KillableThread(Thread):
+    def __init__(self):
+        super(KillableThread, self).__init__()
         self.daemon = True
         self.is_killed = Event()
+
+    def run_loop(self):
+        raise Exception("Unimplemented")
+
+    def run(self):
+        while not self.is_killed.is_set():
+            self.run_loop()
+
+    def kill(self):
+        self.is_killed.set()
+
+
+class CallbackThread(KillableThread):
+    """ Thread that executes callbacks on behalf various subsystems to process
+        and act upon received packets. """
+    def __init__(self):
+        super(CallbackThread, self).__init__()
+        self.packet_queue = Queue.Queue()
+        self.lock = RLock()
+        self.callbacks = dict()
+
+    def callbacks_filtered_by_packet(self, packet):
+        matching_callbacks = []
+        with self.lock:
+            for callback in self.callbacks:
+                packet_filter = self.callbacks[callback]
+                if packet_filter(packet):
+                    matching_callbacks.append(callback)
+        return matching_callbacks
+
+    def has_callback_for_packet(self, packet):
+        return len(self.callbacks_filtered_by_packet(packet)) > 0
+
+    def register_with_rx_thread(self, rx_thread):
+        rx_thread.add_packet_queue(
+            self.has_callback_for_packet, self.packet_queue)
+
+    def add_callback(self, packet_filter, callback):
+        with self.lock:
+            self.callbacks[callback] = packet_filter
+
+    def remove_packet_queue(self, callback):
+        with self.lock:
+            del self.callbacks[callback]
+
+    def dispatch_packet(self, packet):
+        matching_callbacks = self.callbacks_filtered_by_packet(packet)
+        for callback in matching_callbacks:
+            callback(packet)
+
+    def run_loop(self):
+        try:
+            packet = self.packet_queue.get(block=True, timeout=0.1)
+        except Queue.Empty:
+            return  # Nothing to receive, loop again
+        self.dispatch_packet(packet)
+
+
+class RxThread(KillableThread):
+    def __init__(self, socket):
+        super(RxThread, self).__init__()
         self.socket = socket
         self.lock = RLock()
         self.packet_queues = dict()
 
-    def synchronized(self, func):
-        with self.lock:
-            return func
-
-    def run(self):
-        while not self.is_killed.is_set():
-            packet = self.socket.recv(timeout_secs=0.1)
-            if packet is None:
-                continue  # Timeout hit, loop again
-            matching_queues = self.queues_filtered_by_packet(packet)
-            if not matching_queues:
-                LOG.warn(
-                    "Dropping packet, no handler queue!\n%s" % packet.show())
-            for queue in matching_queues:
-                queue.put(packet)
-
-    def kill(self):
-        self.is_killed.set()
+    def run_loop(self):
+        packet = self.socket.recv(timeout_secs=0.1)
+        if packet is None:
+            return  # Nothing to receive, loop again
+        matching_queues = self.queues_filtered_by_packet(packet)
+        if not matching_queues:
+            LOG.warn(
+                "Dropping packet, no handler queue!\n%s" % packet.show())
+        for queue in matching_queues:
+            queue.put(packet)
 
     def queues_filtered_by_packet(self, packet):
         matching_queues = []
@@ -63,20 +117,33 @@ class RxThread(Thread):
             del self.packet_queues[queue]
 
 
+def _create_response_filter(packet_type):
+    def _create_hci_response_packet_filter(request_packet):
+        opcode = request_packet.overload_fields[HCI_Command_Hdr]['opcode']
+
+        def _hci_cmd_complete_packet_filter(packet):
+            if not packet.getlayer(packet_type):
+                return False
+            return packet.opcode == opcode
+
+        return _hci_cmd_complete_packet_filter
+
+    return _create_hci_response_packet_filter
+
+
+def _create_hci_cmd_complete_packet_filter():
+    return _create_response_filter(HCI_Event_Command_Complete)
+
+
+def _create_hci_cmd_status_packet_filter():
+    return _create_response_filter(HCI_Event_Command_Status)
+
+
 class HCIThread(RxThread):
     RESPONSE_TIMEOUT_SECS = 5.0
 
-    def _create_hci_cmd_status_packet_filter(request_packet):
-        opcode = request_packet.overload_fields[HCI_Command_Hdr]['opcode']
-
-        def _hci_cmd_status_packet_filter(packet):
-            if not packet.getlayer(HCI_Event_Command_Complete):
-                return False
-            return packet.opcode == opcode
-        return _hci_cmd_status_packet_filter
-
     def send_cmd(self, scapy_hci_cmd,
-                 response_filter_creator=_create_hci_cmd_status_packet_filter,
+                 response_filter_creator=_create_hci_cmd_complete_packet_filter(),
                  response_timeout_secs=RESPONSE_TIMEOUT_SECS):
         response_queue = None
         if response_filter_creator:
@@ -117,7 +184,8 @@ class HCIThread(RxThread):
     def cmd_read_bd_addr(self):
         def _create_read_bd_addr_response_filter(request_packet):
             def _read_bd_addr_response_filter(packet):
-                return packet.getlayer(HCI_Cmd_Complete_Read_BD_Addr) != None
+                return packet.getlayer(HCI_Cmd_Complete_Read_BD_Addr) \
+                       is not None
             return _read_bd_addr_response_filter
         resp = self.send_cmd(
             HCI_Cmd_Read_BD_Addr(),
@@ -135,6 +203,32 @@ class HCIThread(RxThread):
             type=scan_type, interval=interval_ms * 0.625,
             window=window_ms * 0.625, **kwargs))
 
+    def cmd_le_create_connection(self, address,
+                                 is_identity_address=False,
+                                 interval_ms=10,
+                                 window_ms=10, **kwargs):
+        address_type_map = {
+            (True, False):  0x00,  # Public
+            (False, False): 0x01,  # Random
+            (True, True):   0x02,  # Public Identity
+            (False, True):  0x03,  # Random Identity
+        }
+        self.send_cmd(HCI_Cmd_LE_Create_Connection(
+            paddr=address.macstr(),
+            patype=address_type_map[(address.is_public(), is_identity_address)],
+            interval=interval_ms * 0.625,
+            window=window_ms * 0.625,
+            **kwargs),
+            response_filter_creator=_create_hci_cmd_status_packet_filter())
+
+    def cmd_le_connection_create_cancel(self):
+        self.send_cmd(HCI_Cmd_LE_Create_Connection_Cancel())
+
+    def cmd_disconnect(self, handle):
+        self.send_cmd(
+            HCI_Cmd_Disconnect(handle=handle),
+            response_filter_creator=_create_hci_cmd_status_packet_filter())
+
 
 class BTStack(object):
     def __init__(self, pyusb_dev=None):
@@ -143,6 +237,12 @@ class BTStack(object):
                 pyusb_bt_sockets.find_first_bt_adapter_pyusb_device_or_raise()
         self.hci_socket = pyusb_bt_sockets.PyUSBBluetoothHCISocket(pyusb_dev)
         self.hci = HCIThread(self.hci_socket)
+        self.cb_thread = CallbackThread()
+        self.cb_thread.register_with_rx_thread(self.hci)
+        self.is_scannning_enabled = False
+        self.connection_mgr = ConnectionManager(
+            self.hci, self.cb_thread)
+        self.address = None
 
     def start(self):
         LOG.debug("BTStack start()")
@@ -154,6 +254,8 @@ class BTStack(object):
         self.hci.cmd_reset()
         self.hci.remove_packet_queue(ignore_queue)
 
+        self.cb_thread.start()
+
         self.hci.cmd_set_event_filter_clear_all_filters()
         self.hci.cmd_set_event_mask()
         self.hci.cmd_le_host_supported()
@@ -162,12 +264,30 @@ class BTStack(object):
         #  sends any data to an LE Controller":
         self.hci.cmd_le_read_buffer_size()
 
-        self.addr = self.hci.cmd_read_bd_addr()
+        self.address = self.hci.cmd_read_bd_addr()
+
+    def start_scan(self):
+        assert self.is_scannning_enabled is False
+        self.hci.cmd_le_scan_params()
+        self.hci.cmd_le_scan_enable(True)
+        self.is_scannning_enabled = True
+
+    def stop_scan(self):
+        assert self.is_scannning_enabled is True
+        self.hci.cmd_le_scan_enable(False)
+        self.is_scannning_enabled = False
+
+    def connect(self, address):
+        return self.connection_mgr.connect(address)
+
+    def disconnect(self, connection):
+        self.connection_mgr.disconnect(connection)
 
     def quit(self):
         LOG.debug("BTStack quit()")
         self.hci.cmd_reset()
         self.hci.kill()
+        self.cb_thread.kill()
 
 
 def has_bt_adapter():
