@@ -139,6 +139,10 @@ def _create_hci_cmd_status_packet_filter():
     return _create_response_filter(HCI_Event_Command_Status)
 
 
+class L2CAPThread(RxThread):
+    pass
+
+
 class HCIThread(RxThread):
     RESPONSE_TIMEOUT_SECS = 5.0
 
@@ -236,9 +240,13 @@ class BTStack(object):
             pyusb_dev = \
                 pyusb_bt_sockets.find_first_bt_adapter_pyusb_device_or_raise()
         self.hci_socket = pyusb_bt_sockets.PyUSBBluetoothHCISocket(pyusb_dev)
+        self.l2cap_socket = \
+            pyusb_bt_sockets.PyUSBBluetoothL2CAPSocket(pyusb_dev)
         self.hci = HCIThread(self.hci_socket)
+        self.l2cap = L2CAPThread(self.l2cap_socket)
         self.cb_thread = CallbackThread()
         self.cb_thread.register_with_rx_thread(self.hci)
+        self.cb_thread.register_with_rx_thread(self.l2cap)
         self.is_scannning_enabled = False
         self.connection_mgr = ConnectionManager(
             self.hci, self.cb_thread)
@@ -253,6 +261,8 @@ class BTStack(object):
         self.hci.start()
         self.hci.cmd_reset()
         self.hci.remove_packet_queue(ignore_queue)
+
+        self.l2cap.start()
 
         self.cb_thread.start()
 
@@ -287,6 +297,7 @@ class BTStack(object):
         LOG.debug("BTStack quit()")
         self.hci.cmd_reset()
         self.hci.kill()
+        self.l2cap.kill()
         self.cb_thread.kill()
 
 

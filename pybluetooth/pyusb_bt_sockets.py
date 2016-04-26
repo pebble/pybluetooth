@@ -28,6 +28,8 @@ USB_ENDPOINT_HCI_EVT = 0x81
 USB_HCI_CMD_REQUEST_PARAMS = {
     "bmRequestType": 0x20, "bRequest": 0x00, "wValue": 0x00, "wIndex": 0x00
 }
+USB_ENDPOINT_ACL_DATA_OUT = 0x02
+USB_ENDPOINT_ACL_DATA_IN = 0x82
 
 LOG = logging.getLogger("pybluetooth")
 
@@ -36,15 +38,8 @@ class PyUSBBluetoothUserSocketException(Exception):
     pass
 
 
-class PyUSBBluetoothL2CAPSocket(SuperSocket):
-    desc = "Read/write Bluetooth L2CAP with pyUSB"
-
-    def __init__(self, pyusb_dev):
-        raise Exception("NYI")
-
-
-class PyUSBBluetoothHCISocket(SuperSocket):
-    desc = "Read/write Bluetooth HCI with pyUSB"
+class PyUSBBluetoothBaseSocket(SuperSocket):
+    desc = "Base Bluetooth socket with pyUSB"
 
     def __init__(self, pyusb_dev):
         self.pyusb_dev = pyusb_dev
@@ -52,6 +47,61 @@ class PyUSBBluetoothHCISocket(SuperSocket):
         # Drain any data that was already pending:
         while self.recv(timeout_secs=0.001):
             pass
+
+    def usb_rx_endpoint(self):
+        raise Exception("Implementation required!")
+
+    def packet_indicator(self):
+        raise Exception("Implementation required!")
+
+    def recv(self, x=512, timeout_secs=10.0):
+        # FIXME: Don't know how many bytes to expect here,
+        # using 512 bytes -- will this fly if there's another event right
+        # after it? Or is each event guaranteed to be put in a USB packet of
+        # its own?
+        try:
+            data_array = self.pyusb_dev.read(
+                self.usb_rx_endpoint(), 512, int(timeout_secs * 1000.0))
+        except usb.core.USBError as e:
+            if e.errno == errno.ETIMEDOUT:
+                return None
+            elif e.errno == errno.EIO:
+                # FIXME: Why is are reads on the ACL Data socket throwing I/O
+                # errors sometimes?
+                return None
+            else:
+                raise e
+        data = ''.join([chr(c) for c in data_array])  # Ugh.. array return val
+        data = self.packet_indicator() + data  # Prepend H4 packet indicator
+        scapy_packet = HCI_Hdr(data)
+        LOG.debug("recv %s" % scapy_packet.lastlayer().summary())
+        LOG.debug("recv bytes: " + binascii.hexlify(data))
+        return scapy_packet
+
+
+class PyUSBBluetoothL2CAPSocket(PyUSBBluetoothBaseSocket):
+    desc = "Read/write Bluetooth L2CAP with pyUSB"
+
+    def usb_rx_endpoint(self):
+        return USB_ENDPOINT_ACL_DATA_IN
+
+    def packet_indicator(self):
+        return "\2"  # H4 'ACL Data' packet indicator
+
+    def send(self, scapy_packet):
+        data = str(scapy_packet)
+        LOG.debug("send %s" % scapy_packet.lastlayer().summary())
+        LOG.debug("send bytes: " + binascii.hexlify(data))
+        data = data[1:]  # Cut off the H4 'ACL Data' packet indicator (0x02)
+        sent_len = self.pyusb_dev.write(USB_ENDPOINT_ACL_DATA_OUT, data)
+        l = len(data)
+        if sent_len != l:
+            raise PyUSBBluetoothUserSocketException(
+                "Send failure. Sent %u instead of %u bytes" % (sent_len, l))
+
+
+class PyUSBBluetoothHCISocket(PyUSBBluetoothBaseSocket):
+    desc = "Read/write Bluetooth HCI with pyUSB"
 
     def __del__(self):
         # Always try to do a HCI Reset to stop any on-going
@@ -64,32 +114,17 @@ class PyUSBBluetoothHCISocket(SuperSocket):
     def hci_reset(self):
         self.send(HCI_Hdr() / HCI_Command_Hdr() / HCI_Cmd_Reset())
 
-    def recv(self, x=512, timeout_secs=10.0):
-        # FIXME: Don't know how many bytes to expect here,
-        # using 512 bytes -- will this fly if there's another event right
-        # after it? Or is each event guaranteed to be put in a USB packet of
-        # its own?
-        try:
-            data_array = self.pyusb_dev.read(
-                USB_ENDPOINT_HCI_EVT, 512, int(timeout_secs * 1000.0))
-        except usb.core.USBError as e:
-            if e.errno == errno.ETIMEDOUT:
-                return None
-            else:
-                raise e
+    def usb_rx_endpoint(self):
+        return USB_ENDPOINT_HCI_EVT
 
-        data = ''.join([chr(c) for c in data_array])  # Ugh.. array return val
-        data = "\4" + data  # Prepend H4 'Event' packet indicator
-        scapy_packet = HCI_Hdr(data)
-        LOG.debug("recv %s" % scapy_packet.lastlayer().summary())
-        LOG.debug("recv bytes: " + binascii.hexlify(data))
-        return scapy_packet
+    def packet_indicator(self):
+        return "\4"  # H4 'Event' packet indicator
 
     def send(self, scapy_packet):
         data = str(scapy_packet)
         LOG.debug("send %s" % scapy_packet.lastlayer().summary())
         LOG.debug("send bytes: " + binascii.hexlify(data))
-        data = data[1:]  # Cut off the H4 'Command' packet indicator (0x02)
+        data = data[1:]  # Cut off the H4 'Command' packet indicator (0x01)
         sent_len = self.pyusb_dev.ctrl_transfer(
             data_or_wLength=data, **USB_HCI_CMD_REQUEST_PARAMS)
         l = len(data)
