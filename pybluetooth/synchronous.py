@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """ Class that exposes a synchronous API for various Bluetooth activities.
 """
 
@@ -81,42 +80,3 @@ class BTStackSynchronousUtils(object):
     def disconnect(self, connection, timeout=None):
         self.b.disconnect(connection)
         connection.wait_until_disconnected(timeout=timeout)
-
-
-if __name__ == '__main__':
-    from pybluetooth import BTStack, has_bt_adapter
-
-    LOG.setLevel(logging.DEBUG)
-    lsh = logging.StreamHandler()
-    formatter = logging.Formatter(
-        '%(asctime)s> %(message)s')
-    lsh.setFormatter(formatter)
-    LOG.addHandler(lsh)
-
-    b = BTStack()
-    b.start()
-
-    u = BTStackSynchronousUtils(b)
-
-    # Scan for a couple seconds, then print out the found reports:
-    reports = u.scan(2)
-    for report in reports:
-        report.show()
-
-    # Connect and disconnect 100x in quick succession:
-    def adv_report_filter(adv_report):
-        return True  # Just connect to anything
-        # return adv_report.addr == "c9:ea:a5:b8:c8:10"
-
-    for _ in xrange(0, 100):
-        connection = u.connect(adv_report_filter, timeout=10.0)
-        # connection = u.connect(Address("c9:ea:a5:b8:c8:10"), timeout=10.0)
-        LOG.debug("Connection %s" % connection)
-        u.disconnect(connection)
-
-    # Tear down the stack:
-    b.quit()
-
-    # Wait a bit so we can see in the log what happens after quitting:
-    import time
-    time.sleep(1)
