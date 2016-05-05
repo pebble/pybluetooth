@@ -25,20 +25,14 @@ with open('pybluetooth/version.py') as f:
     exec(f.read())
 
 requires = [
-    'scapy==2.3.2beta',
+    'scapy==2.3.2.dev0',
     # scapy dependencies that aren't installed by scapy's setup.py itself:
     'dnet==1.12',
     'pcapy==0.10.10',
     'pyusb==1.0.0b2',
     'six==1.10.0',
     'pbr==1.9.1',
-]
-
-# `dependency_links` is deprecated...
-# For now, use `pip install --process-dependency-links -e <PATH>` until
-# the next version of scapy is has been released...
-dependency_links = [
-    'https://github.com/pebble/scapy/tarball/bd4bf54#egg=scapy-2.3.2beta'
+    'enum34==1.1.3'
 ]
 
 setup(name='pybluetooth',
@@ -50,11 +44,11 @@ setup(name='pybluetooth',
       author_email='martijn@pebble.com',
       license='MIT',
       packages=find_packages(),
-      dependency_links=dependency_links,
       install_requires=requires,
       tests_require=[
         'pytest',
         'pytest-mock',
+        'mock',
         'scapy',
         'dnet',
         'pcapy',

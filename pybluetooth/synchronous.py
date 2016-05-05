@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """ Class that exposes a synchronous API for various Bluetooth activities.
 """
 
@@ -7,6 +6,9 @@ import Queue
 import time
 
 from scapy.layers.bluetooth import *
+
+from pybluetooth.address import *
+from pybluetooth.exceptions import *
 
 
 LOG = logging.getLogger("pybluetooth")
@@ -21,12 +23,11 @@ class BTStackSynchronousUtils(object):
         adv_report_queue = Queue.Queue()
 
         def adv_packet_filter(packet):
-            return packet.getlayer(HCI_LE_Meta_Advertising_Report) != None
+            return packet.getlayer(HCI_LE_Meta_Advertising_Report) is not None
         self.b.hci.add_packet_queue(adv_packet_filter, adv_report_queue)
-        self.b.hci.cmd_le_scan_params()
-        self.b.hci.cmd_le_scan_enable(True)
+        self.b.start_scan()
         time.sleep(duration_secs)
-        self.b.hci.cmd_le_scan_enable(False)
+        self.b.stop_scan()
         self.b.hci.remove_packet_queue(adv_report_queue)
 
         reports = []
@@ -38,22 +39,44 @@ class BTStackSynchronousUtils(object):
                 break
         return reports
 
+    def scan_until_match(self, packet_filter, timeout=None):
+        LOG.debug("BTStackSynchronousUtils scan_until_match()")
+        adv_report_queue = Queue.Queue()
 
-if __name__ == '__main__':
-    from pybluetooth import BTStack, has_bt_adapter
+        def adv_packet_filter(packet):
+            if packet.getlayer(HCI_LE_Meta_Advertising_Report) is None:
+                return False
+            return packet_filter(packet[HCI_LE_Meta_Advertising_Report])
 
-    LOG.setLevel(logging.DEBUG)
-    lsh = logging.StreamHandler()
-    formatter = logging.Formatter(
-        '%(asctime)s> %(message)s')
-    lsh.setFormatter(formatter)
-    LOG.addHandler(lsh)
+        self.b.hci.add_packet_queue(adv_packet_filter, adv_report_queue)
+        self.b.start_scan()
+        try:
+            report = adv_report_queue.get(block=True, timeout=timeout)
+        except Queue.Empty:
+            raise TimeoutException()
+        finally:
+            self.b.stop_scan()
+            self.b.hci.remove_packet_queue(adv_report_queue)
+        return report
 
-    b = BTStack()
-    b.start()
+    def connect(self, adv_filter_or_address, timeout=None,
+                should_cancel_connecting_on_timeout=True):
+        LOG.debug("BTStackSynchronousUtils connect()")
+        if isinstance(adv_filter_or_address, Address):
+            address = adv_filter_or_address
+        else:
+            adv_report = self.scan_until_match(
+                adv_filter_or_address, timeout=timeout)
+            address = Address.from_packet(adv_report)
+        connection = self.b.connect(address)
+        try:
+            connection.wait_until_connected(timeout=timeout)
+        except TimeoutException as e:
+            if should_cancel_connecting_on_timeout:
+                self.disconnect(connection)
+            raise e
+        return connection
 
-    # Scan for a couple seconds, then print out the found reports:
-    u = BTStackSynchronousUtils(b)
-    reports = u.scan(5)
-    for report in reports:
-        report.show()
+    def disconnect(self, connection, timeout=None):
+        self.b.disconnect(connection)
+        connection.wait_until_disconnected(timeout=timeout)

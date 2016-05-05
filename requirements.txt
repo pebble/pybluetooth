@@ -1,6 +1,7 @@
--e git+https://github.com/pebble/scapy.git@pebble-master#egg=scapy
+scapy==2.3.2.dev0
 dnet==1.12
 pcapy==0.10.10
 pyusb==1.0.0b2
 six==1.10.0
 pbr==1.9.1
+enum34==1.1.3
