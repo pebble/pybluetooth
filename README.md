@@ -12,14 +12,35 @@
 - Inspired by [mikeryan's PyBT][5] project.
 - *WARNING: Many things aren't implemented! Please contribute!*
 
-### Installation
+### Installation (OS X)
+
+Step 1: Install [scapy][3] system dependencies:
 
 ```
-pip install --process-dependency-links -e <PATH_TO_PYBLUETOOTH_ROOT_FOLDER>
+$ brew install libpcap libdnet
 ```
 
-Because this project currently depends on a features in [scapy][3] that have not yet been released,
-you'll need to add the `--process-dependency-links` flag here.
+Step 2: Because this project currently depends on a features in [scapy][3] that have not yet been
+released, you'll need install scapy from Pebble's clone. If you're a Pebble employee, you should be
+able to install [scapy][3] from the internal pypi server, and therefore skip this step.
+
+```
+$ git clone https://github.com/pebble/scapy.git
+$ cd scapy && pip install -e .
+```
+
+Step 3: Then go on to install `pybluetooth`:
+
+```
+$ git clone https://github.com/pebble/pybluetooth.git
+$ cd pybluetooth && pip install -e .
+```
+
+Step 4: Try out one of the examples:
+
+```
+$ ./examples/scan.py
+```
 
 ### Using a Bluetooth USB dongle on Mac OS X
 
