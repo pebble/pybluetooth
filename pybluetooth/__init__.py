@@ -7,6 +7,7 @@ from threading import Event, RLock, Thread
 import hci_event_mask
 import pyusb_bt_sockets
 from connection import ConnectionManager
+from address import *
 
 LOG = logging.getLogger("pybluetooth")
 
@@ -86,7 +87,7 @@ class RxThread(KillableThread):
         self.packet_queues = dict()
 
     def run_loop(self):
-        packet = self.socket.recv(timeout_secs=0.1)
+        packet = self.socket.recv(timeout_secs=5)
         if packet is None:
             return  # Nothing to receive, loop again
         matching_queues = self.queues_filtered_by_packet(packet)
@@ -140,7 +141,14 @@ def _create_hci_cmd_status_packet_filter():
 
 
 class L2CAPThread(RxThread):
-    pass
+    def send(self, connection_handle, scapy_l2cap_message):
+        # Note: the L2CAP Channel ID is automatically set by scapy based on
+        # the payload class :)
+        full_acl_message = (
+            HCI_Hdr() / HCI_ACL_Hdr(handle=connection_handle) /
+            L2CAP_Hdr() / scapy_l2cap_message)
+        full_acl_message.show()
+        self.socket.send(full_acl_message)
 
 
 class HCIThread(RxThread):
@@ -194,7 +202,7 @@ class HCIThread(RxThread):
         resp = self.send_cmd(
             HCI_Cmd_Read_BD_Addr(),
             response_filter_creator=_create_read_bd_addr_response_filter)
-        return str(resp[HCI_Cmd_Complete_Read_BD_Addr])
+        return str(resp[HCI_Cmd_Complete_Read_BD_Addr])[::-1]
 
     def cmd_le_scan_enable(self, enable, filter_dups=True):
         self.send_cmd(HCI_Cmd_LE_Set_Scan_Enable(
@@ -249,7 +257,7 @@ class BTStack(object):
         self.cb_thread.register_with_rx_thread(self.l2cap)
         self.is_scannning_enabled = False
         self.connection_mgr = ConnectionManager(
-            self.hci, self.cb_thread)
+            self.hci, self.l2cap, self.cb_thread)
         self.address = None
 
     def start(self):
@@ -266,6 +274,14 @@ class BTStack(object):
 
         self.cb_thread.start()
 
+        # Just ignore various packet types for now to avoid spamming the logs:
+        def _ignore_filter(packet):
+            return packet.getlayer(
+                HCI_Event_Number_Of_Completed_Packets) is not None
+        def _ignore_packet(packet):
+            pass
+        self.cb_thread.add_callback(_ignore_filter, _ignore_packet)
+
         self.hci.cmd_set_event_filter_clear_all_filters()
         self.hci.cmd_set_event_mask()
         self.hci.cmd_le_host_supported()
@@ -274,7 +290,9 @@ class BTStack(object):
         #  sends any data to an LE Controller":
         self.hci.cmd_le_read_buffer_size()
 
-        self.address = self.hci.cmd_read_bd_addr()
+        self.address = Address(self.hci.cmd_read_bd_addr(),
+                               address_type=AddressType.public)
+        self.connection_mgr.own_public_address = self.address
 
     def start_scan(self):
         assert self.is_scannning_enabled is False

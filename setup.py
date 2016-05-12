@@ -32,7 +32,8 @@ requires = [
     'pyusb==1.0.0b2',
     'six==1.10.0',
     'pbr==1.9.1',
-    'enum34==1.1.3'
+    'enum34==1.1.3',
+    'pycrypto==2.6.1'
 ]
 
 setup(name='pybluetooth',

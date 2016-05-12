@@ -4,11 +4,21 @@ from enum import Enum
 from pybluetooth.address import *
 from pybluetooth.exceptions import *
 from pybluetooth.hci_errors import *
+from pybluetooth.sm import *
 from scapy.layers.bluetooth import *
 from threading import Event, RLock
 
 
 LOG = logging.getLogger("pybluetooth")
+
+
+class L2CAPFixedChannelID(Enum):
+    signaling = 1
+    connectionless = 2
+    amp = 3
+    att = 4
+    le_signaling = 5
+    security_manager = 6
 
 
 class Role(Enum):
@@ -25,9 +35,11 @@ class State(Enum):
 
 
 class Connection(object):
-    def __init__(self, intended=True):
+    def __init__(self, l2cap_thread, own_address, intended=True):
         self.role = Role.none
         self._state = State.disconnected
+        self.l2cap_thread = l2cap_thread
+        self.own_address = own_address
         # Indicates the host wants to be connected to this device (may not be
         # true when local device is slave).
         self.intended = intended
@@ -39,6 +51,7 @@ class Connection(object):
         self.interval_ms = 0
         self.slave_latency = 0
         self.supervision_timeout = 0
+        self.sm = SecurityManager(self)
 
     @property
     def state(self):
@@ -50,10 +63,12 @@ class Connection(object):
         if new_state == State.connected:
             self.connected_event.set()
             self.disconnected_event.clear()
+            self.sm.handle_connected()
         elif new_state == State.disconnecting:
             self.connected_event.clear()
             self.disconnected_event.clear()
         else:  # initiating / disconnected
+            self.sm.handle_disconnected()
             self.connected_event.clear()
             self.disconnected_event.set()
 
@@ -65,6 +80,20 @@ class Connection(object):
         if not self.disconnected_event.wait(timeout):
             raise TimeoutException
 
+    def handle_l2cap_packet(self, packet):
+        if L2CAPFixedChannelID(packet.cid) == \
+                L2CAPFixedChannelID.security_manager:
+            self.sm.handle_sm_packet(packet)
+        else:
+            LOG.debug(
+                "NYI: packet on %s channel!" % L2CAPFixedChannelID(packet.cid))
+
+    def send(self, l2cap_payload):
+        self.l2cap_thread.send(self.handle, l2cap_payload)
+
+    def start_encryption(self, random, ediv, stk):
+        pass
+
     def __str__(self):
         addr_str = None
         if self.address:
@@ -74,12 +103,14 @@ class Connection(object):
 
 
 class ConnectionManager(object):
-    def __init__(self, hci_thread, cb_thread):
+    def __init__(self, hci_thread, l2cap_thread, cb_thread):
         self.connections = set()
         self.hci = hci_thread
+        self.l2cap_thread = l2cap_thread
         self.cb_thread = cb_thread
         self.is_initiating = False
         self.lock = RLock()
+        self.own_public_address = None
 
         def _is_le_connection_event_filter(packet):
             return packet.getlayer(HCI_LE_Meta_Connection_Complete) is not None
@@ -90,6 +121,11 @@ class ConnectionManager(object):
             return packet.getlayer(HCI_Event_Disconnection_Complete) is not None
         self.cb_thread.add_callback(
             _is_disconnection_event_filter, self.handle_disconnection_packet)
+
+        def _is_l2cap_event_filter(packet):
+            return packet.getlayer(HCI_ACL_Hdr) is not None
+        self.cb_thread.add_callback(
+            _is_l2cap_event_filter, self.handle_l2cap_packet)
 
     def find_connection_by_filter_assert_unique(self, filter_func):
         matches = filter(filter_func, self.connections)
@@ -106,6 +142,16 @@ class ConnectionManager(object):
         return self.find_connection_by_filter_assert_unique(
             lambda c: c.handle == handle)
 
+    def handle_l2cap_packet(self, packet):
+        # scapy has a couple shortcomings: the packet boundary field in
+        # HCI_ACL_Hdr isn't parsed correctly. It also doesn't seem to support
+        # the case where an ACL packet does not contain a complete L2CAP packet.
+        # So in case we get a non-complete packet, raise an exception:
+        if packet.flags != 32:
+            raise NotYetImplementedException("")
+        connection = self.find_connection_by_handle(packet.handle)
+        connection.handle_l2cap_packet(packet)
+
     def handle_connection_packet(self, packet):
         self.is_initiating = False
         status = HCIErrorCode(packet.status)
@@ -116,7 +162,9 @@ class ConnectionManager(object):
                 connection = self.find_connection_by_address(address)
                 if not connection:
                     LOG.debug("No intended connection found")
-                    connection = Connection(intended=False)
+                    connection = Connection(self.l2cap_thread,
+                                            self.own_public_address,
+                                            intended=False)
                     self.connections.add(connection)
                 connection.handle = packet.handle
                 connection.address = address
@@ -160,7 +208,9 @@ class ConnectionManager(object):
             self.is_initiating = True
             self.hci.cmd_le_create_connection(address)
 
-            connection = Connection(intended=True)
+            connection = Connection(self.l2cap_thread,
+                                    self.own_public_address,
+                                    intended=True)
             connection.address = address
             connection.state = State.initiating
             self.connections.add(connection)
