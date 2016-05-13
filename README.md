@@ -17,6 +17,7 @@
 Step 1: Install [scapy][3] system dependencies:
 
 ```
+$ brew tap homebrew/dupes
 $ brew install libpcap libdnet
 ```
 
