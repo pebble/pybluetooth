@@ -60,6 +60,13 @@ class PyUSBBluetoothHCISocket(SuperSocket):
             self.hci_reset()
         except:
             pass
+        # Release the device, so it can be claimed again immediately when
+        # this object gets free'd.
+        try:
+            usb.util.dispose_resources(self.pyusb_dev)
+        except:
+            LOG.warn("Couldn't dispose %s" % self.pyusb_dev)
+            pass
 
     def hci_reset(self):
         self.send(HCI_Hdr() / HCI_Command_Hdr() / HCI_Cmd_Reset())
@@ -122,13 +129,28 @@ def find_all_bt_adapters():
                 return True
         return False
 
-    devs = []
+    devs = set()
+
     matchers = [CUSTOM_USB_DEVICE_MATCHER, bt_adapter_matcher]
     for matcher in matchers:
         if not matcher:
             continue
-        devs += list(usb.core.find(find_all=True, custom_match=matcher))
-    return devs
+        devs |= set(usb.core.find(find_all=True, custom_match=matcher))
+
+    # Unfortunately, usb.core.Device doesn't implement __eq__(),
+    # see https://github.com/walac/pyusb/issues/147.
+    # So filter out dupes here:
+    devs_deduped = set(devs)
+    for d in devs:
+        for dd in devs:
+            if d == dd:
+                continue
+            if d not in devs_deduped:
+                continue
+            if d.bus == dd.bus and d.address == dd.address:
+                devs_deduped.remove(dd)
+
+    return devs_deduped
 
 
 class PyUSBBluetoothNoAdapterFoundException(Exception):
@@ -174,7 +196,6 @@ def has_bt_adapter():
     pyusb_dev = find_first_bt_adapter_pyusb_device()
     if pyusb_dev is None:
         return False
-    usb.util.dispose_resources(pyusb_dev)
     return True
 
 
