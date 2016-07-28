@@ -236,6 +236,11 @@ class HCIThread(RxThread):
     def cmd_le_connection_create_cancel(self):
         self.send_cmd(HCI_Cmd_LE_Create_Connection_Cancel())
 
+    def cmd_le_start_encryption(self, handle, rand, ediv, ltk):
+        self.send_cmd(
+            HCI_Cmd_LE_Start_Encryption(handle=handle, rand=rand, ediv=ediv, ltk=ltk),
+            response_filter_creator=_create_hci_cmd_status_packet_filter())
+
     def cmd_disconnect(self, handle):
         self.send_cmd(
             HCI_Cmd_Disconnect(handle=handle),

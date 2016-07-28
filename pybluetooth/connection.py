@@ -35,9 +35,10 @@ class State(Enum):
 
 
 class Connection(object):
-    def __init__(self, l2cap_thread, own_address, intended=True):
+    def __init__(self, hci_thread, l2cap_thread, own_address, intended=True):
         self.role = Role.none
         self._state = State.disconnected
+        self.hci_thread = hci_thread
         self.l2cap_thread = l2cap_thread
         self.own_address = own_address
         # Indicates the host wants to be connected to this device (may not be
@@ -92,7 +93,10 @@ class Connection(object):
         self.l2cap_thread.send(self.handle, l2cap_payload)
 
     def start_encryption(self, random, ediv, stk):
-        pass
+        self.hci_thread.cmd_le_start_encryption(self.handle, random, ediv, stk)
+
+    def handle_encryption_change(self, is_enabled):
+        self.sm.handle_encryption_change(is_enabled)
 
     def __str__(self):
         addr_str = None
@@ -121,6 +125,11 @@ class ConnectionManager(object):
             return packet.getlayer(HCI_Event_Disconnection_Complete) is not None
         self.cb_thread.add_callback(
             _is_disconnection_event_filter, self.handle_disconnection_packet)
+
+        def _is_encryption_change_event_filter(packet):
+            return packet.getlayer(HCI_Event_Encryption_Change) is not None
+        self.cb_thread.add_callback(
+            _is_encryption_change_event_filter, self.handle_encryption_change_packet)
 
         def _is_l2cap_event_filter(packet):
             return packet.getlayer(HCI_ACL_Hdr) is not None
@@ -162,7 +171,8 @@ class ConnectionManager(object):
                 connection = self.find_connection_by_address(address)
                 if not connection:
                     LOG.debug("No intended connection found")
-                    connection = Connection(self.l2cap_thread,
+                    connection = Connection(self.hci,
+                                            self.l2cap_thread,
                                             self.own_public_address,
                                             intended=False)
                     self.connections.add(connection)
@@ -193,6 +203,12 @@ class ConnectionManager(object):
                 LOG.debug("NYI: Auto-reconnecting isn't implemented yet.")
                 self.connections.remove(connection)
 
+    def handle_encryption_change_packet(self, packet):
+        connection = None
+        with self.lock:
+            connection = self.find_connection_by_handle(packet.handle)
+        connection.handle_encryption_change(packet.enabled > 0)
+
     def connect(self, address):
         with self.lock:
             connection = self.find_connection_by_address(address)
@@ -208,7 +224,8 @@ class ConnectionManager(object):
             self.is_initiating = True
             self.hci.cmd_le_create_connection(address)
 
-            connection = Connection(self.l2cap_thread,
+            connection = Connection(self.hci,
+                                    self.l2cap_thread,
                                     self.own_public_address,
                                     intended=True)
             connection.address = address

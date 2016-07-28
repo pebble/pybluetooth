@@ -24,7 +24,7 @@ u = BTStackSynchronousUtils(b)
 
 # Attempt to connect to a device by address:
 try:
-    connection = u.connect(Address("8F:29:FB:1C:55:5A"), timeout=5.0)
+    connection = u.connect(Address("51:3D:6E:32:66:22"), timeout=5.0)
     # FIXME: add synchronous util call for pair()
     connection.sm.pair()
     # Stay connected for 15 seconds,

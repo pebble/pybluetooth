@@ -165,7 +165,7 @@ class SecurityManager(object):
         stk = s1(self.tk, self.srand, self.mrand)
         random = "\x00" * 8
         ediv = 0
-        self.connection.start_encryption(random, ediv, stk)
+        self.connection.start_encryption(random, ediv, stk[::-1])
 
     def calculate_confirm(self, random):
         def reversed_bytes_from_cmd(cmd):
@@ -199,6 +199,7 @@ class SecurityManager(object):
                 reason=SMPairingErrorReason.confirm_value_failed))
             self.cleanup()
         else:
+            self.state = SMPairingState.awaiting_link_encryption
             self.start_encryption()
 
     def handle_sm_packet(self, packet):
@@ -231,6 +232,11 @@ class SecurityManager(object):
         packet.show()
 
         # TODO: Send appropriate failure response and update our state
+
+    def handle_encryption_change(self, is_enabled):
+        if self.state != SMPairingState.awaiting_link_encryption:
+            return
+
 
     def handle_connected(self):
         pass

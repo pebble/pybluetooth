@@ -27,8 +27,9 @@ def _disconnection_complete_event_packet():
 
 def test_connection_manager_connect_as_master_successful():
     hci_thread = MagicMock()
+    l2cap_thread = MagicMock()
     cb_thread = CallbackThread()
-    mgr = ConnectionManager(hci_thread, cb_thread)
+    mgr = ConnectionManager(hci_thread, l2cap_thread, cb_thread)
 
     address = Address("c9:ea:a5:b8:c8:10", AddressType.random)
 
