@@ -229,6 +229,14 @@ class HCIThread(RxThread):
             HCI_Cmd_Disconnect(handle=handle),
             response_filter_creator=_create_hci_cmd_status_packet_filter())
 
+    def cmd_le_update_conn_params(self, handle, params):
+        self.send_cmd(HCI_Cmd_LE_Connection_Update(
+                handle=handle,
+                min_interval=params[0], max_interval=params[1],
+                latency=params[2], timeout=params[3],
+                min_ce=1, max_ce=0xffff),
+            response_filter_creator=_create_hci_cmd_status_packet_filter())
+
 
 class BTStack(object):
     def __init__(self, pyusb_dev=None):
@@ -282,6 +290,9 @@ class BTStack(object):
 
     def disconnect(self, connection):
         self.connection_mgr.disconnect(connection)
+
+    def update_conn_params(self, connection, params, callback):
+        self.connection_mgr.update_conn_params(connection, params, callback)
 
     def quit(self):
         LOG.debug("BTStack quit()")

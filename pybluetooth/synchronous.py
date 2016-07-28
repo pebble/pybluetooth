@@ -80,3 +80,11 @@ class BTStackSynchronousUtils(object):
     def disconnect(self, connection, timeout=None):
         self.b.disconnect(connection)
         connection.wait_until_disconnected(timeout=timeout)
+
+    def update_conn_params(self, connection, params, timeout=None):
+        q = Queue.Queue()
+
+        def callback(actual_params):
+            q.put(actual_params)
+        self.b.update_conn_params(connection, params, callback)
+        return q.get(True, timeout)

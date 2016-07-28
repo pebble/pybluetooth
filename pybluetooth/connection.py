@@ -7,6 +7,8 @@ from pybluetooth.hci_errors import *
 from scapy.layers.bluetooth import *
 from threading import Event, RLock
 
+from pybluetooth.exceptions import *
+
 
 LOG = logging.getLogger("pybluetooth")
 
@@ -184,3 +186,22 @@ class ConnectionManager(object):
                 self.hci.cmd_disconnect(connection.handle)
                 connection.intended = False
                 connection.state = State.disconnecting
+
+    def update_conn_params(self, connection, params, callback):
+        with self.lock:
+            if connection.state != State.connected:
+                raise NotConnectedException()
+            self.hci.cmd_le_update_conn_params(connection.handle, params)
+
+            def _handle_update_complete(packet):
+                # TODO: Update fields in the Connection object
+                callback((packet.interval, packet.latency, packet.timeout))
+
+            # TODO: Handle disconnection before complete event was rcv'd...
+            def _is_update_complete_event_filter(packet):
+                return (
+                    packet.getlayer(
+                        HCI_LE_Meta_Connection_Update_Complete) is not None and
+                    packet.handle == connection.handle)
+            self.cb_thread.add_callback(
+                _is_update_complete_event_filter, _handle_update_complete)
